@@ -11,5 +11,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 add_subdirectory(common)
+add_subdirectory(proto)
 add_subdirectory(agent)
 add_subdirectory(client)

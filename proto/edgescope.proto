@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package edgescope.v1;
+
+message GetAgentInfoRequest {}
+
+message GetAgentInfoResponse {
+    string hostname = 1;
+    string kernel_version = 2;
+    uint64 uptime_seconds = 3;
+    string agent_version = 4;
+}
+
+message GetSystemMetricsRequest {}
+
+message GetSystemMetricsResponse {
+    double cpu_usage_percent = 1;
+    uint64 memory_total_bytes = 2;
+    uint64 memory_available_bytes = 3;
+    uint64 memory_used_bytes = 4;
+    double load_average_1m = 5;
+    double load_average_5m = 6;
+    double load_average_15m = 7;
+    uint64 uptime_seconds = 8;
+}
+
+service EdgeScopeService {
+    rpc GetAgentInfo(GetAgentInfoRequest)
+        returns (GetAgentInfoResponse);
+    rpc GetSystemMetrics(GetSystemMetricsRequest)
+        returns (GetSystemMetricsResponse);
+}
