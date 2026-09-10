@@ -1,0 +1,7 @@
+# EdgeScope Agent configuration
+# Remote listening must be enabled explicitly, for example 0.0.0.0:50051.
+listen_address=127.0.0.1:50051
+sample_interval_ms=1000
+log_file=/tmp/edgescope-agent.log
+diagnostic_directory=/tmp/edgescope-diagnostics
+allowed_services=ssh.service,cron.service

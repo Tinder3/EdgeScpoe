@@ -7,6 +7,7 @@
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
@@ -17,6 +18,7 @@
 #include <QMetaObject>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QSortFilterProxyModel>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -56,6 +58,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     qRegisterMetaType<NetworkInterfaceList>();
     qRegisterMetaType<TcpConnectionList>();
     qRegisterMetaType<LogSourceList>();
+    qRegisterMetaType<ServiceList>();
 
     BuildUi();
 
@@ -79,6 +82,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(this, &MainWindow::RequestLogs, rpc_worker_, &RpcWorker::ListLogs);
     connect(this, &MainWindow::RequestLogContent, rpc_worker_,
             &RpcWorker::ReadLog);
+    connect(this, &MainWindow::RequestStartLogStream, rpc_worker_,
+            &RpcWorker::StartLogStream);
+    connect(this, &MainWindow::RequestStopLogStream, rpc_worker_,
+            &RpcWorker::StopLogStream);
+    connect(this, &MainWindow::RequestServices, rpc_worker_,
+            &RpcWorker::RefreshServices);
+    connect(this, &MainWindow::RequestServiceControl, rpc_worker_,
+            &RpcWorker::ControlService);
+    connect(this, &MainWindow::RequestDiagnostic, rpc_worker_,
+            &RpcWorker::CreateAndDownloadDiagnostic);
     connect(rpc_worker_, &RpcWorker::Connected, this,
             &MainWindow::HandleConnected);
     connect(rpc_worker_, &RpcWorker::Disconnected, this,
@@ -94,6 +107,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(rpc_worker_, &RpcWorker::LogsReady, this, &MainWindow::UpdateLogs);
     connect(rpc_worker_, &RpcWorker::LogContentReady, this,
             &MainWindow::UpdateLogContent);
+    connect(rpc_worker_, &RpcWorker::LogLineReady, this,
+            &MainWindow::AppendLogLine);
+    connect(rpc_worker_, &RpcWorker::LogStreamStopped, this,
+            &MainWindow::HandleLogStreamStopped);
+    connect(rpc_worker_, &RpcWorker::ServicesReady, this,
+            &MainWindow::UpdateServices);
+    connect(rpc_worker_, &RpcWorker::DiagnosticProgress, this,
+            &MainWindow::UpdateDiagnosticProgress);
+    connect(rpc_worker_, &RpcWorker::DiagnosticReady, this,
+            &MainWindow::DiagnosticCompleted);
     connect(rpc_worker_, &RpcWorker::RpcError, this,
             &MainWindow::HandleRpcError);
     connect(rpc_worker_, &RpcWorker::OperationSucceeded, this,
@@ -116,7 +139,7 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::BuildUi() {
-    setWindowTitle("EdgeScope v0.5");
+    setWindowTitle("EdgeScope v1.0");
     resize(1000, 680);
 
     auto* central = new QWidget(this);
@@ -233,18 +256,64 @@ void MainWindow::BuildUi() {
     log_keyword_edit_->setMaxLength(256);
     log_keyword_edit_->setPlaceholderText("Optional keyword");
     log_refresh_button_ = new QPushButton("Read tail");
+    log_stream_start_button_ = new QPushButton("Start streaming");
+    log_stream_stop_button_ = new QPushButton("Stop streaming");
     log_controls->addWidget(new QLabel("Log:"));
     log_controls->addWidget(log_source_combo_, 1);
     log_controls->addWidget(new QLabel("Lines:"));
     log_controls->addWidget(log_lines_spin_);
     log_controls->addWidget(log_keyword_edit_, 1);
     log_controls->addWidget(log_refresh_button_);
+    log_controls->addWidget(log_stream_start_button_);
+    log_controls->addWidget(log_stream_stop_button_);
     logs_layout->addLayout(log_controls);
     log_output_ = new QPlainTextEdit;
     log_output_->setReadOnly(true);
     log_output_->setMaximumBlockCount(2000);
     logs_layout->addWidget(log_output_, 1);
     tabs->addTab(logs, "Logs");
+
+    auto* services = new QWidget;
+    auto* services_layout = new QVBoxLayout(services);
+    auto* service_buttons = new QHBoxLayout;
+    service_refresh_button_ = new QPushButton("Refresh services");
+    auto* service_start_button = new QPushButton("Start");
+    auto* service_stop_button = new QPushButton("Stop");
+    auto* service_restart_button = new QPushButton("Restart");
+    service_buttons->addWidget(service_refresh_button_);
+    service_buttons->addStretch();
+    service_buttons->addWidget(service_start_button);
+    service_buttons->addWidget(service_stop_button);
+    service_buttons->addWidget(service_restart_button);
+    services_layout->addLayout(service_buttons);
+    service_table_ = new QTableWidget;
+    service_table_->setColumnCount(5);
+    service_table_->setHorizontalHeaderLabels(
+        {"Service", "Description", "Load", "Active", "Sub-state"});
+    service_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    service_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    service_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    service_table_->horizontalHeader()->setStretchLastSection(true);
+    services_layout->addWidget(service_table_, 1);
+    tabs->addTab(services, "Services");
+
+    auto* diagnostics = new QWidget;
+    auto* diagnostics_layout = new QVBoxLayout(diagnostics);
+    diagnostics_layout->addWidget(new QLabel(
+        "Create a controlled snapshot of system, process, network and recent "
+        "log information, then download it as a tar.gz file."));
+    diagnostic_create_button_ = new QPushButton("Create and download bundle");
+    diagnostics_layout->addWidget(diagnostic_create_button_, 0, Qt::AlignLeft);
+    diagnostic_progress_ = new QProgressBar;
+    diagnostic_progress_->setRange(0, 100);
+    diagnostic_progress_->setValue(0);
+    diagnostics_layout->addWidget(diagnostic_progress_);
+    diagnostic_status_ = new QLabel("No diagnostic bundle downloaded.");
+    diagnostic_status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    diagnostic_status_->setWordWrap(true);
+    diagnostics_layout->addWidget(diagnostic_status_);
+    diagnostics_layout->addStretch();
+    tabs->addTab(diagnostics, "Diagnostics");
 
     main_layout->addWidget(tabs, 1);
     setCentralWidget(central);
@@ -296,6 +365,32 @@ void MainWindow::BuildUi() {
                                static_cast<quint32>(log_lines_spin_->value()),
                                log_keyword_edit_->text());
     });
+    connect(log_stream_start_button_, &QPushButton::clicked, this, [this] {
+        const QString log_id = log_source_combo_->currentData().toString();
+        if (log_id.isEmpty()) {
+            QMessageBox::information(this, "Logs", "No log source selected.");
+            return;
+        }
+        log_stream_start_button_->setEnabled(false);
+        log_stream_stop_button_->setEnabled(true);
+        emit RequestStartLogStream(log_id, log_keyword_edit_->text());
+    });
+    connect(log_stream_stop_button_, &QPushButton::clicked, this,
+            &MainWindow::RequestStopLogStream);
+    connect(service_refresh_button_, &QPushButton::clicked, this,
+            &MainWindow::RequestServices);
+    connect(service_start_button, &QPushButton::clicked, this, [this] {
+        ConfirmServiceControl(edgescope::v1::SERVICE_ACTION_START, "start");
+    });
+    connect(service_stop_button, &QPushButton::clicked, this, [this] {
+        ConfirmServiceControl(edgescope::v1::SERVICE_ACTION_STOP, "stop");
+    });
+    connect(service_restart_button, &QPushButton::clicked, this, [this] {
+        ConfirmServiceControl(edgescope::v1::SERVICE_ACTION_RESTART,
+                              "restart");
+    });
+    connect(diagnostic_create_button_, &QPushButton::clicked, this,
+            &MainWindow::CreateDiagnostic);
 }
 
 void MainWindow::ConnectToAgent() {
@@ -313,12 +408,14 @@ void MainWindow::ConnectToAgent() {
 void MainWindow::DisconnectFromAgent() {
     metrics_timer_->stop();
     processes_timer_->stop();
+    emit RequestStopLogStream();
     emit RequestDisconnect();
 }
 
 void MainWindow::ReconnectToAgent() {
     metrics_timer_->stop();
     processes_timer_->stop();
+    emit RequestStopLogStream();
     connection_status_->setText("Reconnecting...");
     emit RequestDisconnect();
     emit RequestConnect(host_edit_->text().trimmed(),
@@ -337,6 +434,7 @@ void MainWindow::HandleConnected(const AgentInfoData& agent_info) {
     emit RequestProcesses();
     emit RequestNetwork();
     emit RequestLogs();
+    emit RequestServices();
 }
 
 void MainWindow::HandleDisconnected() {
@@ -440,13 +538,63 @@ void MainWindow::UpdateLogContent(const QStringList& lines, bool truncated) {
         5000);
 }
 
+void MainWindow::AppendLogLine(const QString& line) {
+    log_output_->appendPlainText(line);
+}
+
+void MainWindow::HandleLogStreamStopped() {
+    log_stream_stop_button_->setEnabled(false);
+    log_stream_start_button_->setEnabled(
+        connection_status_->text() == "Connected");
+}
+
+void MainWindow::UpdateServices(const ServiceList& services) {
+    service_table_->setRowCount(services.size());
+    for (int row = 0; row < services.size(); ++row) {
+        const ServiceData& service = services.at(row);
+        const QStringList values = {service.name, service.description,
+                                    service.load_state, service.active_state,
+                                    service.sub_state};
+        for (int column = 0; column < values.size(); ++column) {
+            service_table_->setItem(row, column,
+                                    new QTableWidgetItem(values.at(column)));
+        }
+    }
+    service_table_->resizeColumnsToContents();
+    statusBar()->showMessage(
+        QString("Loaded %1 allowed services").arg(services.size()), 4000);
+}
+
+void MainWindow::UpdateDiagnosticProgress(quint64 received, quint64 total) {
+    const int percent = total == 0
+                            ? 0
+                            : static_cast<int>((received * 100) / total);
+    diagnostic_progress_->setValue(percent);
+    diagnostic_status_->setText(
+        QString("Downloading: %1 / %2").arg(FormatBytes(received),
+                                             FormatBytes(total)));
+}
+
+void MainWindow::DiagnosticCompleted(const QString& path, quint64 size_bytes) {
+    diagnostic_progress_->setValue(100);
+    diagnostic_create_button_->setEnabled(true);
+    diagnostic_status_->setText(
+        QString("Saved %1 to %2").arg(FormatBytes(size_bytes), path));
+    statusBar()->showMessage("Diagnostic bundle downloaded", 5000);
+}
+
 void MainWindow::HandleRpcError(const QString& operation,
                                 const QString& message,
-                                bool connection_lost) {
+    bool connection_lost) {
+    if (operation == "CreateDiagnosticBundle" ||
+        operation == "DownloadDiagnosticBundle") {
+        diagnostic_create_button_->setEnabled(true);
+    }
     statusBar()->showMessage(operation + ": " + message, 8000);
     if (connection_lost) {
         metrics_timer_->stop();
         processes_timer_->stop();
+        emit RequestStopLogStream();
         SetConnected(false);
         QMessageBox::warning(this, "Agent connection lost", message);
     } else {
@@ -474,6 +622,10 @@ void MainWindow::SetConnected(bool connected) {
     reconnect_button_->setEnabled(connected);
     network_refresh_button_->setEnabled(connected);
     log_refresh_button_->setEnabled(connected);
+    log_stream_start_button_->setEnabled(connected);
+    log_stream_stop_button_->setEnabled(false);
+    service_refresh_button_->setEnabled(connected);
+    diagnostic_create_button_->setEnabled(connected);
     host_edit_->setEnabled(!connected);
     port_spin_->setEnabled(!connected);
     if (!connected) {
@@ -508,4 +660,33 @@ void MainWindow::ConfirmProcessControl(int action,
     if (answer == QMessageBox::Yes) {
         emit RequestProcessControl(pid, action);
     }
+}
+
+void MainWindow::ConfirmServiceControl(int action,
+                                       const QString& action_name) {
+    const int row = service_table_->currentRow();
+    if (row < 0 || service_table_->item(row, 0) == nullptr) {
+        QMessageBox::information(this, "Service control",
+                                 "Select an allowed service first.");
+        return;
+    }
+    const QString name = service_table_->item(row, 0)->text();
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this, "Confirm service operation",
+        QString("Really %1 %2?").arg(action_name, name),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer == QMessageBox::Yes) {
+        emit RequestServiceControl(name, action);
+    }
+}
+
+void MainWindow::CreateDiagnostic() {
+    const QString destination = QFileDialog::getSaveFileName(
+        this, "Save diagnostic bundle",
+        "edgescope-diagnostic.tar.gz", "Tar gzip archive (*.tar.gz)");
+    if (destination.isEmpty()) return;
+    diagnostic_create_button_->setEnabled(false);
+    diagnostic_progress_->setValue(0);
+    diagnostic_status_->setText("Creating diagnostic bundle on Agent...");
+    emit RequestDiagnostic(destination);
 }

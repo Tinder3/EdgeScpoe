@@ -1,14 +1,19 @@
 #pragma once
 
+#include "AgentConfig.h"
+#include "DiagnosticCollector.h"
 #include "LogCollector.h"
 #include "MetricsSampler.h"
 #include "NetworkCollector.h"
 #include "ProcessCollector.h"
 #include "ProcessController.h"
+#include "ServiceManager.h"
 #include "edgescope.grpc.pb.h"
 
 class EdgeScopeServiceImpl final : public edgescope::v1::EdgeScopeService::Service {
 public:
+    explicit EdgeScopeServiceImpl(const AgentConfig& config = AgentConfig{});
+
     grpc::Status GetAgentInfo(
         grpc::ServerContext* context,
         const edgescope::v1::GetAgentInfoRequest* request,
@@ -60,10 +65,37 @@ public:
         const edgescope::v1::ReadLogRequest* request,
         edgescope::v1::ReadLogResponse* response) override;
 
+    grpc::Status StreamLog(
+        grpc::ServerContext* context,
+        const edgescope::v1::StreamLogRequest* request,
+        grpc::ServerWriter<edgescope::v1::LogLine>* writer) override;
+
+    grpc::Status ListServices(
+        grpc::ServerContext* context,
+        const edgescope::v1::ListServicesRequest* request,
+        edgescope::v1::ListServicesResponse* response) override;
+
+    grpc::Status ControlService(
+        grpc::ServerContext* context,
+        const edgescope::v1::ControlServiceRequest* request,
+        edgescope::v1::ControlServiceResponse* response) override;
+
+    grpc::Status CreateDiagnosticBundle(
+        grpc::ServerContext* context,
+        const edgescope::v1::CreateDiagnosticBundleRequest* request,
+        edgescope::v1::CreateDiagnosticBundleResponse* response) override;
+
+    grpc::Status DownloadDiagnosticBundle(
+        grpc::ServerContext* context,
+        const edgescope::v1::DownloadDiagnosticBundleRequest* request,
+        grpc::ServerWriter<edgescope::v1::DiagnosticChunk>* writer) override;
+
 private:
     MetricsSampler metrics_sampler_;
     ProcessCollector process_collector_;
     ProcessController process_controller_;
     NetworkCollector network_collector_;
     LogCollector log_collector_;
+    DiagnosticCollector diagnostic_collector_;
+    ServiceManager service_manager_;
 };

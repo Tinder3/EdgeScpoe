@@ -76,3 +76,16 @@ TEST(LogCollectorTest, ReplacesInvalidUtf8) {
     EXPECT_EQ(LogCollector::SanitizeUtf8(input),
               std::string("valid \xEF\xBF\xBD text"));
 }
+
+TEST(LogCollectorTest, ResolvesOnlyWhitelistedLogIds) {
+    LogCollector collector("/tmp/edgescope-agent-test.log");
+    std::string path;
+    std::string error;
+    LogCollectorError code = LogCollectorError::kNone;
+    EXPECT_TRUE(collector.ResolveLogPath("edgescope-agent", &path, &code,
+                                         &error));
+    EXPECT_EQ(path, "/tmp/edgescope-agent-test.log");
+    EXPECT_FALSE(collector.ResolveLogPath("../../etc/shadow", &path, &code,
+                                          &error));
+    EXPECT_EQ(code, LogCollectorError::kInvalidArgument);
+}

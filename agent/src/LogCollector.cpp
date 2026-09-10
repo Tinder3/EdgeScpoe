@@ -9,34 +9,16 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
-
-struct AllowedLog {
-    const char* id;
-    const char* display_name;
-    const char* path;
-};
-
-constexpr std::array<AllowedLog, 3> kAllowedLogs = {{
-    {"system", "System log", "/var/log/syslog"},
-    {"packages", "Package manager log", "/var/log/dpkg.log"},
-    {"apt-history", "APT history", "/var/log/apt/history.log"},
-}};
 
 constexpr std::uint32_t kMaximumLines = 1000;
 constexpr std::size_t kMaximumKeywordLength = 256;
 constexpr std::size_t kMaximumLineLength = 4096;
 constexpr std::size_t kReadBlockSize = 64 * 1024;
 constexpr std::size_t kMaximumScanBytes = 8 * 1024 * 1024;
-
-const AllowedLog* FindAllowedLog(const std::string& id) {
-    const auto iterator = std::find_if(
-        kAllowedLogs.begin(), kAllowedLogs.end(),
-        [&id](const AllowedLog& log) { return id == log.id; });
-    return iterator == kAllowedLogs.end() ? nullptr : &*iterator;
-}
 
 LogCollectorError OpenError() {
     if (errno == EACCES || errno == EPERM) {
@@ -49,6 +31,22 @@ LogCollectorError OpenError() {
 }
 
 }  // namespace
+
+LogCollector::LogCollector(std::string agent_log_path)
+    : allowed_logs_{{"system", "System log", "/var/log/syslog"},
+                    {"packages", "Package manager log", "/var/log/dpkg.log"},
+                    {"apt-history", "APT history",
+                     "/var/log/apt/history.log"},
+                    {"edgescope-agent", "EdgeScope Agent log",
+                     std::move(agent_log_path)}} {}
+
+const LogCollector::AllowedLog* LogCollector::FindAllowedLog(
+    const std::string& id) const {
+    const auto iterator = std::find_if(
+        allowed_logs_.begin(), allowed_logs_.end(),
+        [&id](const AllowedLog& log) { return id == log.id; });
+    return iterator == allowed_logs_.end() ? nullptr : &*iterator;
+}
 
 std::string LogCollector::SanitizeUtf8(const std::string& input) {
     constexpr char kReplacement[] = "\xEF\xBF\xBD";
@@ -109,8 +107,8 @@ std::string LogCollector::SanitizeUtf8(const std::string& input) {
 
 std::vector<LogSourceInfo> LogCollector::ListLogs() const {
     std::vector<LogSourceInfo> result;
-    result.reserve(kAllowedLogs.size());
-    for (const AllowedLog& log : kAllowedLogs) {
+    result.reserve(allowed_logs_.size());
+    for (const AllowedLog& log : allowed_logs_) {
         std::error_code error;
         const bool available = std::filesystem::is_regular_file(log.path, error);
         result.push_back({log.id, log.display_name, available && !error});
@@ -218,5 +216,21 @@ bool LogCollector::ReadLog(const std::string& log_id, std::uint32_t max_lines,
     result->truncated = result->truncated || position > 0;
     result->lines.assign(std::make_move_iterator(selected_lines.begin()),
                          std::make_move_iterator(selected_lines.end()));
+    return true;
+}
+
+bool LogCollector::ResolveLogPath(const std::string& log_id, std::string* path,
+                                  LogCollectorError* error_code,
+                                  std::string* error) const {
+    if (path == nullptr || error_code == nullptr || error == nullptr) return false;
+    const AllowedLog* log = FindAllowedLog(log_id);
+    if (log == nullptr) {
+        *error_code = LogCollectorError::kInvalidArgument;
+        *error = "unknown log id";
+        return false;
+    }
+    *path = log->path;
+    *error_code = LogCollectorError::kNone;
+    error->clear();
     return true;
 }

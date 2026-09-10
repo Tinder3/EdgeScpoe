@@ -36,6 +36,20 @@ public:
     grpc::Status ReadLog(const std::string& log_id, std::uint32_t max_lines,
                          const std::string& keyword,
                          edgescope::v1::ReadLogResponse* response);
+    grpc::Status StreamLog(
+        const std::string& log_id, const std::string& keyword,
+        grpc::ClientContext* context,
+        const std::function<void(const std::string&)>& on_line);
+    grpc::Status ListServices(
+        edgescope::v1::ListServicesResponse* response);
+    grpc::Status ControlService(const std::string& name,
+                                edgescope::v1::ServiceAction action);
+    grpc::Status CreateDiagnosticBundle(
+        edgescope::v1::CreateDiagnosticBundleResponse* response);
+    grpc::Status DownloadDiagnosticBundle(
+        const std::string& bundle_id,
+        const std::function<bool(const edgescope::v1::DiagnosticChunk&)>&
+            on_chunk);
 
 private:
     std::shared_ptr<grpc::Channel> channel_;

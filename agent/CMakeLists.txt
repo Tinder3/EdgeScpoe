@@ -1,4 +1,7 @@
 add_executable(edgescope-agent
+    src/AgentConfig.cpp
+    src/AgentLogger.cpp
+    src/DiagnosticCollector.cpp
     src/main.cpp
     src/EdgeScopeServiceImpl.cpp
     src/LogCollector.cpp
@@ -6,6 +9,7 @@ add_executable(edgescope-agent
     src/NetworkCollector.cpp
     src/ProcessCollector.cpp
     src/ProcessController.cpp
+    src/ServiceManager.cpp
     src/SystemCollector.cpp
 )
 
@@ -14,4 +18,5 @@ target_include_directories(edgescope-agent PRIVATE include)
 target_link_libraries(edgescope-agent PRIVATE
     edgescope_common
     edgescope_proto
+    spdlog::spdlog
 )

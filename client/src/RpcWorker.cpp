@@ -1,7 +1,9 @@
 #include "RpcWorker.h"
 
 #include <QStringList>
+#include <QFile>
 
+#include <fstream>
 #include <string>
 #include <utility>
 
@@ -28,10 +30,13 @@ ProcessData ConvertProcess(const edgescope::v1::ProcessInfo& process) {
 
 RpcWorker::RpcWorker(QObject* parent) : QObject(parent) {}
 
+RpcWorker::~RpcWorker() { StopLogStream(); }
+
 void RpcWorker::ConnectToAgent(const QString& host, quint16 port) {
+    StopLogStream();
     const std::string target =
         host.toStdString() + ":" + std::to_string(port);
-    client_ = std::make_unique<EdgeScopeClient>(target);
+    client_ = std::make_shared<EdgeScopeClient>(target);
 
     edgescope::v1::GetAgentInfoResponse response;
     const grpc::Status status = client_->GetAgentInfo(&response);
@@ -51,8 +56,47 @@ void RpcWorker::ConnectToAgent(const QString& host, quint16 port) {
 }
 
 void RpcWorker::DisconnectFromAgent() {
+    StopLogStream();
     client_.reset();
     emit Disconnected();
+}
+
+void RpcWorker::StartLogStream(const QString& log_id, const QString& keyword) {
+    StopLogStream();
+    if (!client_) return;
+    auto context = std::make_shared<grpc::ClientContext>();
+    auto client = client_;
+    {
+        std::lock_guard<std::mutex> lock(stream_mutex_);
+        stream_context_ = context;
+    }
+    stream_thread_ = std::thread([this, client, context, log_id, keyword] {
+        const grpc::Status status = client->StreamLog(
+            log_id.toStdString(), keyword.toStdString(), context.get(),
+            [this](const std::string& line) {
+                emit LogLineReady(QString::fromStdString(line));
+            });
+        if (!status.ok() && status.error_code() != grpc::StatusCode::CANCELLED) {
+            const bool lost = status.error_code() == grpc::StatusCode::UNAVAILABLE;
+            emit RpcError("StreamLog",
+                          QString::fromStdString(status.error_message()), lost);
+        }
+        emit LogStreamStopped();
+    });
+}
+
+void RpcWorker::StopLogStream() {
+    std::shared_ptr<grpc::ClientContext> context;
+    {
+        std::lock_guard<std::mutex> lock(stream_mutex_);
+        context = stream_context_;
+    }
+    if (context) context->TryCancel();
+    if (stream_thread_.joinable()) stream_thread_.join();
+    {
+        std::lock_guard<std::mutex> lock(stream_mutex_);
+        stream_context_.reset();
+    }
 }
 
 void RpcWorker::RefreshMetrics() {
@@ -232,6 +276,97 @@ void RpcWorker::ReadLog(const QString& log_id, quint32 max_lines,
         lines.push_back(QString::fromStdString(line));
     }
     emit LogContentReady(lines, response.truncated());
+}
+
+void RpcWorker::RefreshServices() {
+    if (!client_) {
+        return;
+    }
+    edgescope::v1::ListServicesResponse response;
+    const grpc::Status status = client_->ListServices(&response);
+    if (!status.ok()) {
+        EmitRpcError("ListServices", status);
+        return;
+    }
+    ServiceList services;
+    services.reserve(response.services_size());
+    for (const auto& service : response.services()) {
+        services.push_back({QString::fromStdString(service.name()),
+                            QString::fromStdString(service.description()),
+                            QString::fromStdString(service.load_state()),
+                            QString::fromStdString(service.active_state()),
+                            QString::fromStdString(service.sub_state())});
+    }
+    emit ServicesReady(services);
+}
+
+void RpcWorker::ControlService(const QString& name, int action) {
+    if (!client_) {
+        return;
+    }
+    const grpc::Status status = client_->ControlService(
+        name.toStdString(), static_cast<edgescope::v1::ServiceAction>(action));
+    if (!status.ok()) {
+        EmitRpcError("ControlService", status);
+        return;
+    }
+    emit OperationSucceeded("Service operation succeeded: " + name);
+    RefreshServices();
+}
+
+void RpcWorker::CreateAndDownloadDiagnostic(const QString& destination) {
+    if (!client_) return;
+    edgescope::v1::CreateDiagnosticBundleResponse created;
+    grpc::Status status = client_->CreateDiagnosticBundle(&created);
+    if (!status.ok()) {
+        EmitRpcError("CreateDiagnosticBundle", status);
+        return;
+    }
+
+    std::ofstream output(destination.toStdString(),
+                         std::ios::binary | std::ios::trunc);
+    if (!output) {
+        emit RpcError("DownloadDiagnosticBundle",
+                      "Cannot open the selected local file", false);
+        return;
+    }
+    std::uint64_t received = 0;
+    bool local_write_failed = false;
+    status = client_->DownloadDiagnosticBundle(
+        created.bundle_id(),
+        [&](const edgescope::v1::DiagnosticChunk& chunk) {
+            if (chunk.offset() != received ||
+                chunk.total_size_bytes() != created.total_size_bytes()) {
+                local_write_failed = true;
+                return false;
+            }
+            output.write(chunk.data().data(),
+                         static_cast<std::streamsize>(chunk.data().size()));
+            if (!output) {
+                local_write_failed = true;
+                return false;
+            }
+            received += chunk.data().size();
+            emit DiagnosticProgress(received, chunk.total_size_bytes());
+            return true;
+        });
+    output.close();
+    if (local_write_failed || !status.ok() ||
+        received != created.total_size_bytes()) {
+        QFile::remove(destination);
+        if (local_write_failed) {
+            emit RpcError("DownloadDiagnosticBundle",
+                          "Local write failed or chunk sequence was invalid",
+                          false);
+        } else if (!status.ok()) {
+            EmitRpcError("DownloadDiagnosticBundle", status);
+        } else {
+            emit RpcError("DownloadDiagnosticBundle",
+                          "Downloaded size does not match bundle size", false);
+        }
+        return;
+    }
+    emit DiagnosticReady(destination, received);
 }
 
 void RpcWorker::EmitRpcError(const QString& operation,

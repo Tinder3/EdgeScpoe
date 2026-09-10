@@ -124,3 +124,64 @@ grpc::Status EdgeScopeClient::ReadLog(
     SetUnaryDeadline(&context);
     return stub_->ReadLog(&context, request, response);
 }
+
+grpc::Status EdgeScopeClient::StreamLog(
+    const std::string& log_id, const std::string& keyword,
+    grpc::ClientContext* context,
+    const std::function<void(const std::string&)>& on_line) {
+    edgescope::v1::StreamLogRequest request;
+    request.set_log_id(log_id);
+    request.set_keyword(keyword);
+    request.set_start_at_end(true);
+    auto reader = stub_->StreamLog(context, request);
+    edgescope::v1::LogLine line;
+    while (reader->Read(&line)) on_line(line.line());
+    return reader->Finish();
+}
+
+grpc::Status EdgeScopeClient::ListServices(
+    edgescope::v1::ListServicesResponse* response) {
+    edgescope::v1::ListServicesRequest request;
+    grpc::ClientContext context;
+    SetUnaryDeadline(&context);
+    return stub_->ListServices(&context, request, response);
+}
+
+grpc::Status EdgeScopeClient::ControlService(
+    const std::string& name, edgescope::v1::ServiceAction action) {
+    edgescope::v1::ControlServiceRequest request;
+    request.set_name(name);
+    request.set_action(action);
+    edgescope::v1::ControlServiceResponse response;
+    grpc::ClientContext context;
+    SetUnaryDeadline(&context);
+    return stub_->ControlService(&context, request, &response);
+}
+
+grpc::Status EdgeScopeClient::CreateDiagnosticBundle(
+    edgescope::v1::CreateDiagnosticBundleResponse* response) {
+    edgescope::v1::CreateDiagnosticBundleRequest request;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() +
+                         std::chrono::seconds(30));
+    return stub_->CreateDiagnosticBundle(&context, request, response);
+}
+
+grpc::Status EdgeScopeClient::DownloadDiagnosticBundle(
+    const std::string& bundle_id,
+    const std::function<bool(const edgescope::v1::DiagnosticChunk&)>& on_chunk) {
+    edgescope::v1::DownloadDiagnosticBundleRequest request;
+    request.set_bundle_id(bundle_id);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() +
+                         std::chrono::minutes(5));
+    auto reader = stub_->DownloadDiagnosticBundle(&context, request);
+    edgescope::v1::DiagnosticChunk chunk;
+    while (reader->Read(&chunk)) {
+        if (!on_chunk(chunk)) {
+            context.TryCancel();
+            break;
+        }
+    }
+    return reader->Finish();
+}

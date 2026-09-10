@@ -127,6 +127,64 @@ message ReadLogResponse {
     bool truncated = 2;
 }
 
+message StreamLogRequest {
+    string log_id = 1;
+    string keyword = 2;
+    bool start_at_end = 3;
+}
+
+message LogLine {
+    string line = 1;
+}
+
+message ServiceInfo {
+    string name = 1;
+    string description = 2;
+    string load_state = 3;
+    string active_state = 4;
+    string sub_state = 5;
+}
+
+message ListServicesRequest {}
+
+message ListServicesResponse {
+    repeated ServiceInfo services = 1;
+}
+
+enum ServiceAction {
+    SERVICE_ACTION_UNSPECIFIED = 0;
+    SERVICE_ACTION_START = 1;
+    SERVICE_ACTION_STOP = 2;
+    SERVICE_ACTION_RESTART = 3;
+}
+
+message ControlServiceRequest {
+    string name = 1;
+    ServiceAction action = 2;
+}
+
+message ControlServiceResponse {}
+
+message CreateDiagnosticBundleRequest {}
+
+message CreateDiagnosticBundleResponse {
+    string bundle_id = 1;
+    string filename = 2;
+    uint64 total_size_bytes = 3;
+    uint64 created_at_unix_seconds = 4;
+}
+
+message DownloadDiagnosticBundleRequest {
+    string bundle_id = 1;
+}
+
+message DiagnosticChunk {
+    bytes data = 1;
+    uint64 offset = 2;
+    uint64 total_size_bytes = 3;
+    bool eof = 4;
+}
+
 service EdgeScopeService {
     rpc GetAgentInfo(GetAgentInfoRequest)
         returns (GetAgentInfoResponse);
@@ -148,4 +206,14 @@ service EdgeScopeService {
         returns (ListLogsResponse);
     rpc ReadLog(ReadLogRequest)
         returns (ReadLogResponse);
+    rpc StreamLog(StreamLogRequest)
+        returns (stream LogLine);
+    rpc ListServices(ListServicesRequest)
+        returns (ListServicesResponse);
+    rpc ControlService(ControlServiceRequest)
+        returns (ControlServiceResponse);
+    rpc CreateDiagnosticBundle(CreateDiagnosticBundleRequest)
+        returns (CreateDiagnosticBundleResponse);
+    rpc DownloadDiagnosticBundle(DownloadDiagnosticBundleRequest)
+        returns (stream DiagnosticChunk);
 }

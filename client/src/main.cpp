@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -72,7 +73,13 @@ bool ParsePid(const std::string& value, std::int32_t* pid) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    EdgeScopeClient client("127.0.0.1:50051");
+    std::string target = "127.0.0.1:50051";
+    int argument_index = 1;
+    if (argc >= 3 && std::string(argv[1]) == "--target") {
+        target = argv[2];
+        argument_index = 3;
+    }
+    EdgeScopeClient client(target);
     edgescope::v1::GetAgentInfoResponse agent_info;
     const grpc::Status agent_status = client.GetAgentInfo(&agent_info);
 
@@ -88,17 +95,86 @@ int main(int argc, char* argv[]) {
     std::cout << "Uptime: " << agent_info.uptime_seconds() << " seconds" << std::endl;
     std::cout << "Agent Version: " << agent_info.agent_version() << std::endl;
 
-    if (argc != 1) {
-        if (argc != 4 || std::string(argv[1]) != "--control") {
+    if (argument_index != argc) {
+        if (argc - argument_index == 2 &&
+            std::string(argv[argument_index]) == "--diagnostic") {
+            edgescope::v1::CreateDiagnosticBundleResponse created;
+            grpc::Status status = client.CreateDiagnosticBundle(&created);
+            if (!status.ok()) {
+                std::cerr << "CreateDiagnosticBundle RPC failed: "
+                          << status.error_message() << std::endl;
+                return 1;
+            }
+            std::ofstream output(argv[argument_index + 1],
+                                 std::ios::binary | std::ios::trunc);
+            if (!output) {
+                std::cerr << "Failed to open diagnostic output file" << std::endl;
+                return 1;
+            }
+            std::uint64_t received = 0;
+            status = client.DownloadDiagnosticBundle(
+                created.bundle_id(),
+                [&](const edgescope::v1::DiagnosticChunk& chunk) {
+                    if (chunk.offset() != received) return false;
+                    output.write(chunk.data().data(),
+                                 static_cast<std::streamsize>(chunk.data().size()));
+                    received += chunk.data().size();
+                    return static_cast<bool>(output);
+                });
+            output.close();
+            if (!status.ok() || received != created.total_size_bytes()) {
+                std::cerr << "DownloadDiagnosticBundle failed: "
+                          << status.error_message() << std::endl;
+                return 1;
+            }
+            std::cout << "Diagnostic bundle saved to "
+                      << argv[argument_index + 1] << " (" << received
+                      << " bytes)" << std::endl;
+            return 0;
+        }
+        if (argc - argument_index == 3 &&
+            std::string(argv[argument_index]) == "--stream-log") {
+            std::size_t wanted = 0;
+            try {
+                wanted = std::stoul(argv[argument_index + 2]);
+            } catch (const std::exception&) {
+                wanted = 0;
+            }
+            if (wanted == 0 || wanted > 1000) {
+                std::cerr << "Log stream count must be between 1 and 1000"
+                          << std::endl;
+                return 1;
+            }
+            grpc::ClientContext context;
+            std::size_t received = 0;
+            const grpc::Status status = client.StreamLog(
+                argv[argument_index + 1], "", &context,
+                [&](const std::string& line) {
+                    std::cout << line << std::endl;
+                    if (++received >= wanted) context.TryCancel();
+                });
+            if (!status.ok() && status.error_code() != grpc::StatusCode::CANCELLED) {
+                std::cerr << "StreamLog RPC failed: " << status.error_message()
+                          << std::endl;
+                return 1;
+            }
+            return 0;
+        }
+        if (argc - argument_index != 3 ||
+            std::string(argv[argument_index]) != "--control") {
             std::cerr << "Usage: " << argv[0]
-                      << " [--control PID term|kill|stop|continue]" << std::endl;
+                      << " [--target HOST:PORT]"
+                         " [--control PID term|kill|stop|continue |"
+                         " --diagnostic OUTPUT.tar.gz | --stream-log ID COUNT]"
+                      << std::endl;
             return 1;
         }
 
         std::int32_t pid = 0;
         edgescope::v1::ProcessAction action =
             edgescope::v1::PROCESS_ACTION_UNSPECIFIED;
-        if (!ParsePid(argv[2], &pid) || !ParseControlAction(argv[3], &action)) {
+        if (!ParsePid(argv[argument_index + 1], &pid) ||
+            !ParseControlAction(argv[argument_index + 2], &action)) {
             std::cerr << "Invalid process control arguments" << std::endl;
             return 1;
         }
@@ -253,6 +329,20 @@ int main(int argc, char* argv[]) {
             std::cout << line << std::endl;
         }
         break;
+    }
+
+    edgescope::v1::ListServicesResponse services;
+    const grpc::Status services_status = client.ListServices(&services);
+    if (!services_status.ok()) {
+        std::cerr << "ListServices RPC failed: "
+                  << services_status.error_message() << std::endl;
+        return 1;
+    }
+    std::cout << '\n' << "Allowed Services" << std::endl;
+    for (const auto& service : services.services()) {
+        std::cout << service.name() << " [" << service.load_state() << "/"
+                  << service.active_state() << "/" << service.sub_state()
+                  << "] " << service.description() << std::endl;
     }
     return 0;
 }

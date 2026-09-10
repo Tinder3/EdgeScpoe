@@ -1,6 +1,9 @@
 #include "EdgeScopeServiceImpl.h"
 
+#include "AgentLogger.h"
+
 #include <cerrno>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -9,6 +12,10 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include <chrono>
+#include <filesystem>
+#include <sys/stat.h>
+#include <thread>
 
 namespace {
 
@@ -141,7 +148,33 @@ grpc::Status LogStatus(LogCollectorError error_code, const std::string& error) {
     return grpc::Status(grpc::StatusCode::INTERNAL, "unknown log error");
 }
 
+grpc::Status ServiceStatus(ServiceManagerError error_code,
+                           const std::string& error) {
+    switch (error_code) {
+        case ServiceManagerError::kInvalidArgument:
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, error);
+        case ServiceManagerError::kNotAllowed:
+        case ServiceManagerError::kPermissionDenied:
+            return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, error);
+        case ServiceManagerError::kNotFound:
+            return grpc::Status(grpc::StatusCode::NOT_FOUND, error);
+        case ServiceManagerError::kCommandFailed:
+            return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION, error);
+        case ServiceManagerError::kNone:
+            break;
+    }
+    return grpc::Status(grpc::StatusCode::INTERNAL,
+                        "unknown service manager error");
+}
+
 }  // namespace
+
+EdgeScopeServiceImpl::EdgeScopeServiceImpl(const AgentConfig& config)
+    : metrics_sampler_(config.sample_interval),
+      log_collector_(config.log_file),
+      diagnostic_collector_(config.diagnostic_directory, &process_collector_,
+                            &network_collector_, &log_collector_),
+      service_manager_(config.allowed_services) {}
 
 grpc::Status EdgeScopeServiceImpl::GetAgentInfo(
     grpc::ServerContext* /*context*/,
@@ -150,7 +183,7 @@ grpc::Status EdgeScopeServiceImpl::GetAgentInfo(
     response->set_hostname(GetHostname());
     response->set_kernel_version(GetKernelVersion());
     response->set_uptime_seconds(GetUptimeSeconds());
-    response->set_agent_version("0.6.0");
+    response->set_agent_version("1.0.0");
     return grpc::Status::OK;
 }
 
@@ -214,13 +247,13 @@ grpc::Status EdgeScopeServiceImpl::ControlProcess(
     std::string error;
     if (!process_controller_.Control(request->pid(), action, &error_code,
                                      &error)) {
-        std::cerr << "Process control failed for pid " << request->pid() << ": "
-                  << error << std::endl;
+        AgentLogger::Warn("process control failed for pid " +
+                          std::to_string(request->pid()) + ": " + error);
         return ProcessControlStatus(error_code, error);
     }
 
-    std::cout << "Process control succeeded for pid " << request->pid()
-              << std::endl;
+    AgentLogger::Info("process control succeeded for pid " +
+                      std::to_string(request->pid()));
     return grpc::Status::OK;
 }
 
@@ -304,6 +337,199 @@ grpc::Status EdgeScopeServiceImpl::ReadLog(
     return grpc::Status::OK;
 }
 
+grpc::Status EdgeScopeServiceImpl::StreamLog(
+    grpc::ServerContext* context,
+    const edgescope::v1::StreamLogRequest* request,
+    grpc::ServerWriter<edgescope::v1::LogLine>* writer) {
+    if (request->keyword().size() > 256) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            "keyword is too long");
+    }
+    std::string path;
+    LogCollectorError error_code = LogCollectorError::kNone;
+    std::string error;
+    if (!log_collector_.ResolveLogPath(request->log_id(), &path, &error_code,
+                                       &error)) {
+        return LogStatus(error_code, error);
+    }
+
+    struct stat file_status {};
+    if (stat(path.c_str(), &file_status) != 0) {
+        return grpc::Status(grpc::StatusCode::NOT_FOUND,
+                            "log file is not available");
+    }
+    constexpr std::uint64_t kStreamReadSize = 64 * 1024;
+    const std::uint64_t initial_size =
+        static_cast<std::uint64_t>(file_status.st_size);
+    std::uint64_t offset = request->start_at_end()
+                               ? initial_size
+                               : initial_size > kStreamReadSize
+                                     ? initial_size - kStreamReadSize
+                                     : 0;
+    ino_t inode = file_status.st_ino;
+    std::string partial_line;
+    while (!context->IsCancelled()) {
+        if (stat(path.c_str(), &file_status) != 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            continue;
+        }
+        if (file_status.st_ino != inode ||
+            static_cast<std::uint64_t>(file_status.st_size) < offset) {
+            inode = file_status.st_ino;
+            offset = 0;
+            partial_line.clear();
+        }
+        if (static_cast<std::uint64_t>(file_status.st_size) > offset) {
+            std::ifstream input(path, std::ios::binary);
+            input.seekg(static_cast<std::streamoff>(offset));
+            std::array<char, kStreamReadSize> buffer{};
+            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const std::size_t count = static_cast<std::size_t>(input.gcount());
+            std::string appended(buffer.data(), count);
+            offset += count;
+            partial_line += appended;
+            std::size_t newline = std::string::npos;
+            while ((newline = partial_line.find('\n')) != std::string::npos) {
+                std::string line = partial_line.substr(0, newline);
+                partial_line.erase(0, newline + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.size() > 4096) line.resize(4096);
+                if (!request->keyword().empty() &&
+                    line.find(request->keyword()) == std::string::npos) {
+                    continue;
+                }
+                edgescope::v1::LogLine output;
+                output.set_line(LogCollector::SanitizeUtf8(line));
+                if (!writer->Write(output)) return grpc::Status::OK;
+            }
+            if (partial_line.size() > 4096) partial_line.erase(0, partial_line.size() - 4096);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status EdgeScopeServiceImpl::ListServices(
+    grpc::ServerContext* /*context*/,
+    const edgescope::v1::ListServicesRequest* /*request*/,
+    edgescope::v1::ListServicesResponse* response) {
+    std::vector<ServiceInfo> services;
+    std::string error;
+    if (!service_manager_.ListServices(&services, &error)) {
+        AgentLogger::Error("failed to list services: " + error);
+        return grpc::Status(grpc::StatusCode::INTERNAL, error);
+    }
+    for (const ServiceInfo& service : services) {
+        auto* output = response->add_services();
+        output->set_name(service.name);
+        output->set_description(service.description);
+        output->set_load_state(service.load_state);
+        output->set_active_state(service.active_state);
+        output->set_sub_state(service.sub_state);
+    }
+    return grpc::Status::OK;
+}
+
+grpc::Status EdgeScopeServiceImpl::ControlService(
+    grpc::ServerContext* /*context*/,
+    const edgescope::v1::ControlServiceRequest* request,
+    edgescope::v1::ControlServiceResponse* /*response*/) {
+    ServiceAction action;
+    switch (request->action()) {
+        case edgescope::v1::SERVICE_ACTION_START:
+            action = ServiceAction::kStart;
+            break;
+        case edgescope::v1::SERVICE_ACTION_STOP:
+            action = ServiceAction::kStop;
+            break;
+        case edgescope::v1::SERVICE_ACTION_RESTART:
+            action = ServiceAction::kRestart;
+            break;
+        case edgescope::v1::SERVICE_ACTION_UNSPECIFIED:
+        default:
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                "a supported service action is required");
+    }
+    ServiceManagerError error_code = ServiceManagerError::kNone;
+    std::string error;
+    if (!service_manager_.ControlService(request->name(), action, &error_code,
+                                         &error)) {
+        AgentLogger::Warn("service control failed for " + request->name() +
+                          ": " + error);
+        return ServiceStatus(error_code, error);
+    }
+    AgentLogger::Info("service control succeeded for " + request->name());
+    return grpc::Status::OK;
+}
+
+grpc::Status EdgeScopeServiceImpl::CreateDiagnosticBundle(
+    grpc::ServerContext* /*context*/,
+    const edgescope::v1::CreateDiagnosticBundleRequest* /*request*/,
+    edgescope::v1::CreateDiagnosticBundleResponse* response) {
+    SystemMetrics metrics;
+    std::uint64_t generation = 0;
+    std::string error;
+    if (!metrics_sampler_.GetLatest(&metrics, &generation, &error)) {
+        return grpc::Status(grpc::StatusCode::INTERNAL, error);
+    }
+    DiagnosticBundleInfo bundle;
+    if (!diagnostic_collector_.CreateBundle(metrics, &bundle, &error)) {
+        AgentLogger::Error("failed to create diagnostic bundle: " + error);
+        return grpc::Status(grpc::StatusCode::INTERNAL, error);
+    }
+    response->set_bundle_id(bundle.id);
+    response->set_filename(bundle.filename);
+    response->set_total_size_bytes(bundle.size_bytes);
+    response->set_created_at_unix_seconds(bundle.created_at_unix_seconds);
+    AgentLogger::Info("created diagnostic bundle " + bundle.id + " (" +
+                      std::to_string(bundle.size_bytes) + " bytes)");
+    return grpc::Status::OK;
+}
+
+grpc::Status EdgeScopeServiceImpl::DownloadDiagnosticBundle(
+    grpc::ServerContext* context,
+    const edgescope::v1::DownloadDiagnosticBundleRequest* request,
+    grpc::ServerWriter<edgescope::v1::DiagnosticChunk>* writer) {
+    if (request->bundle_id().empty()) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            "bundle_id is required");
+    }
+    std::filesystem::path path;
+    std::uint64_t total_size = 0;
+    std::string error;
+    if (!diagnostic_collector_.GetBundlePath(request->bundle_id(), &path,
+                                             &total_size, &error)) {
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, error);
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                            "failed to open diagnostic bundle");
+    }
+    constexpr std::size_t kChunkSize = 64 * 1024;
+    std::array<char, kChunkSize> buffer{};
+    std::uint64_t offset = 0;
+    while (!context->IsCancelled() && input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = input.gcount();
+        if (count <= 0) break;
+        edgescope::v1::DiagnosticChunk chunk;
+        chunk.set_data(buffer.data(), static_cast<std::size_t>(count));
+        chunk.set_offset(offset);
+        chunk.set_total_size_bytes(total_size);
+        offset += static_cast<std::uint64_t>(count);
+        chunk.set_eof(offset == total_size);
+        if (!writer->Write(chunk)) return grpc::Status::OK;
+    }
+    if (context->IsCancelled()) return grpc::Status::OK;
+    if (input.bad() || offset != total_size) {
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                            "failed while reading diagnostic bundle");
+    }
+    AgentLogger::Info("downloaded diagnostic bundle " + request->bundle_id());
+    return grpc::Status::OK;
+}
+
 grpc::Status EdgeScopeServiceImpl::GetSystemMetrics(
     grpc::ServerContext* /*context*/,
     const edgescope::v1::GetSystemMetricsRequest* /*request*/,
@@ -347,9 +573,10 @@ grpc::Status EdgeScopeServiceImpl::StreamSystemMetrics(
         return grpc::Status::OK;
     }
 
-    constexpr std::uint32_t kSamplerIntervalMs = 1000;
+    const std::uint64_t sampler_interval_ms =
+        static_cast<std::uint64_t>(metrics_sampler_.sample_interval().count());
     const std::uint64_t samples_per_response =
-        (interval_ms + kSamplerIntervalMs - 1) / kSamplerIntervalMs;
+        (interval_ms + sampler_interval_ms - 1) / sampler_interval_ms;
     std::uint64_t last_sent_generation = generation;
     while (!context->IsCancelled()) {
         if (!metrics_sampler_.WaitForNext(generation, &metrics, &generation,

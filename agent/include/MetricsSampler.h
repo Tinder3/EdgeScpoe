@@ -22,6 +22,9 @@ public:
                    std::string* error) const;
     bool WaitForNext(std::uint64_t previous_generation, SystemMetrics* metrics,
                      std::uint64_t* generation, std::string* error);
+    std::chrono::milliseconds sample_interval() const {
+        return sample_interval_;
+    }
 
 private:
     void Sample();

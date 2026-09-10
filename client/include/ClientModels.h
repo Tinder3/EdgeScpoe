@@ -64,9 +64,18 @@ struct LogSourceData {
     bool available = false;
 };
 
+struct ServiceData {
+    QString name;
+    QString description;
+    QString load_state;
+    QString active_state;
+    QString sub_state;
+};
+
 using NetworkInterfaceList = QVector<NetworkInterfaceData>;
 using TcpConnectionList = QVector<TcpConnectionData>;
 using LogSourceList = QVector<LogSourceData>;
+using ServiceList = QVector<ServiceData>;
 
 Q_DECLARE_METATYPE(AgentInfoData)
 Q_DECLARE_METATYPE(SystemMetricsData)
@@ -75,3 +84,4 @@ Q_DECLARE_METATYPE(ProcessList)
 Q_DECLARE_METATYPE(NetworkInterfaceList)
 Q_DECLARE_METATYPE(TcpConnectionList)
 Q_DECLARE_METATYPE(LogSourceList)
+Q_DECLARE_METATYPE(ServiceList)

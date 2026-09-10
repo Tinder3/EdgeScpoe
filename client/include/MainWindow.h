@@ -11,6 +11,7 @@ class QComboBox;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QProgressBar;
 class QSortFilterProxyModel;
 class QSpinBox;
 class QTableView;
@@ -37,6 +38,11 @@ signals:
     void RequestLogs();
     void RequestLogContent(const QString& log_id, quint32 max_lines,
                            const QString& keyword);
+    void RequestStartLogStream(const QString& log_id, const QString& keyword);
+    void RequestStopLogStream();
+    void RequestServices();
+    void RequestServiceControl(const QString& name, int action);
+    void RequestDiagnostic(const QString& destination);
 
 private slots:
     void ConnectToAgent();
@@ -51,6 +57,11 @@ private slots:
                        const TcpConnectionList& connections);
     void UpdateLogs(const LogSourceList& logs);
     void UpdateLogContent(const QStringList& lines, bool truncated);
+    void AppendLogLine(const QString& line);
+    void HandleLogStreamStopped();
+    void UpdateServices(const ServiceList& services);
+    void UpdateDiagnosticProgress(quint64 received, quint64 total);
+    void DiagnosticCompleted(const QString& path, quint64 size_bytes);
     void HandleRpcError(const QString& operation, const QString& message,
                         bool connection_lost);
     void ShowSelectedProcessDetails();
@@ -60,6 +71,8 @@ private:
     void SetConnected(bool connected);
     qint32 SelectedPid() const;
     void ConfirmProcessControl(int action, const QString& action_name);
+    void ConfirmServiceControl(int action, const QString& action_name);
+    void CreateDiagnostic();
 
     QLineEdit* host_edit_ = nullptr;
     QSpinBox* port_spin_ = nullptr;
@@ -91,7 +104,16 @@ private:
     QSpinBox* log_lines_spin_ = nullptr;
     QLineEdit* log_keyword_edit_ = nullptr;
     QPushButton* log_refresh_button_ = nullptr;
+    QPushButton* log_stream_start_button_ = nullptr;
+    QPushButton* log_stream_stop_button_ = nullptr;
     QPlainTextEdit* log_output_ = nullptr;
+
+    QTableWidget* service_table_ = nullptr;
+    QPushButton* service_refresh_button_ = nullptr;
+
+    QPushButton* diagnostic_create_button_ = nullptr;
+    QProgressBar* diagnostic_progress_ = nullptr;
+    QLabel* diagnostic_status_ = nullptr;
 
     QTimer* metrics_timer_ = nullptr;
     QTimer* processes_timer_ = nullptr;

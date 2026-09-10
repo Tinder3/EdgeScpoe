@@ -8,7 +8,7 @@
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     QApplication::setApplicationName("EdgeScope");
-    QApplication::setApplicationVersion("0.5.0");
+    QApplication::setApplicationVersion("1.0.0");
 
     MainWindow window;
     window.show();
