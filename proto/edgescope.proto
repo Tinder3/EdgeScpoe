@@ -13,6 +13,10 @@ message GetAgentInfoResponse {
 
 message GetSystemMetricsRequest {}
 
+message StreamSystemMetricsRequest {
+    uint32 interval_ms = 1;
+}
+
 message GetSystemMetricsResponse {
     double cpu_usage_percent = 1;
     uint64 memory_total_bytes = 2;
@@ -24,9 +28,124 @@ message GetSystemMetricsResponse {
     uint64 uptime_seconds = 8;
 }
 
+message ProcessInfo {
+    int32 pid = 1;
+    int32 ppid = 2;
+    string name = 3;
+    string state = 4;
+    string command_line = 5;
+    double cpu_usage_percent = 6;
+    uint64 resident_memory_bytes = 7;
+    uint64 virtual_memory_bytes = 8;
+    uint32 thread_count = 9;
+    uint64 read_bytes = 10;
+    uint64 write_bytes = 11;
+    uint64 start_time_ticks = 12;
+}
+
+message ListProcessesRequest {}
+
+message ListProcessesResponse {
+    repeated ProcessInfo processes = 1;
+}
+
+message GetProcessDetailsRequest {
+    int32 pid = 1;
+}
+
+message GetProcessDetailsResponse {
+    ProcessInfo process = 1;
+}
+
+enum ProcessAction {
+    PROCESS_ACTION_UNSPECIFIED = 0;
+    PROCESS_ACTION_TERMINATE = 1;
+    PROCESS_ACTION_KILL = 2;
+    PROCESS_ACTION_STOP = 3;
+    PROCESS_ACTION_CONTINUE = 4;
+}
+
+message ControlProcessRequest {
+    int32 pid = 1;
+    ProcessAction action = 2;
+}
+
+message ControlProcessResponse {}
+
+message NetworkInterface {
+    string name = 1;
+    repeated string ipv4_addresses = 2;
+    repeated string ipv6_addresses = 3;
+    uint64 rx_bytes = 4;
+    uint64 tx_bytes = 5;
+    string state = 6;
+}
+
+message GetNetworkInterfacesRequest {}
+
+message GetNetworkInterfacesResponse {
+    repeated NetworkInterface interfaces = 1;
+}
+
+message TcpConnection {
+    string protocol = 1;
+    string local_address = 2;
+    uint32 local_port = 3;
+    string remote_address = 4;
+    uint32 remote_port = 5;
+    string state = 6;
+    uint64 inode = 7;
+    int32 pid = 8;
+}
+
+message ListTcpConnectionsRequest {}
+
+message ListTcpConnectionsResponse {
+    repeated TcpConnection connections = 1;
+}
+
+message LogSource {
+    string id = 1;
+    string display_name = 2;
+    bool available = 3;
+}
+
+message ListLogsRequest {}
+
+message ListLogsResponse {
+    repeated LogSource logs = 1;
+}
+
+message ReadLogRequest {
+    string log_id = 1;
+    uint32 max_lines = 2;
+    string keyword = 3;
+}
+
+message ReadLogResponse {
+    repeated string lines = 1;
+    bool truncated = 2;
+}
+
 service EdgeScopeService {
     rpc GetAgentInfo(GetAgentInfoRequest)
         returns (GetAgentInfoResponse);
     rpc GetSystemMetrics(GetSystemMetricsRequest)
         returns (GetSystemMetricsResponse);
+    rpc StreamSystemMetrics(StreamSystemMetricsRequest)
+        returns (stream GetSystemMetricsResponse);
+    rpc ListProcesses(ListProcessesRequest)
+        returns (ListProcessesResponse);
+    rpc GetProcessDetails(GetProcessDetailsRequest)
+        returns (GetProcessDetailsResponse);
+    rpc ControlProcess(ControlProcessRequest)
+        returns (ControlProcessResponse);
+    rpc GetNetworkInterfaces(GetNetworkInterfacesRequest)
+        returns (GetNetworkInterfacesResponse);
+    rpc ListTcpConnections(ListTcpConnectionsRequest)
+        returns (ListTcpConnectionsResponse);
+    rpc ListLogs(ListLogsRequest)
+        returns (ListLogsResponse);
+    rpc ReadLog(ReadLogRequest)
+        returns (ReadLogResponse);
 }

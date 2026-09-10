@@ -1,6 +1,11 @@
 add_executable(edgescope-agent
     src/main.cpp
     src/EdgeScopeServiceImpl.cpp
+    src/LogCollector.cpp
+    src/MetricsSampler.cpp
+    src/NetworkCollector.cpp
+    src/ProcessCollector.cpp
+    src/ProcessController.cpp
     src/SystemCollector.cpp
 )
 

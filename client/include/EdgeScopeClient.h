@@ -4,6 +4,9 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -14,6 +17,25 @@ public:
     grpc::Status GetAgentInfo(edgescope::v1::GetAgentInfoResponse* response);
     grpc::Status GetSystemMetrics(
         edgescope::v1::GetSystemMetricsResponse* response);
+    grpc::Status StreamSystemMetrics(
+        std::uint32_t interval_ms, std::size_t max_samples,
+        const std::function<void(
+            const edgescope::v1::GetSystemMetricsResponse&)>& on_metrics);
+    grpc::Status ListProcesses(
+        edgescope::v1::ListProcessesResponse* response);
+    grpc::Status GetProcessDetails(
+        std::int32_t pid,
+        edgescope::v1::GetProcessDetailsResponse* response);
+    grpc::Status ControlProcess(std::int32_t pid,
+                                edgescope::v1::ProcessAction action);
+    grpc::Status GetNetworkInterfaces(
+        edgescope::v1::GetNetworkInterfacesResponse* response);
+    grpc::Status ListTcpConnections(
+        edgescope::v1::ListTcpConnectionsResponse* response);
+    grpc::Status ListLogs(edgescope::v1::ListLogsResponse* response);
+    grpc::Status ReadLog(const std::string& log_id, std::uint32_t max_lines,
+                         const std::string& keyword,
+                         edgescope::v1::ReadLogResponse* response);
 
 private:
     std::shared_ptr<grpc::Channel> channel_;
